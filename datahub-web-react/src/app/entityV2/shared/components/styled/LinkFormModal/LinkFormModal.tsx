@@ -2,7 +2,14 @@ import { Form } from 'antd';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import styled from 'styled-components/macro';
 
-import { Button, Checkbox, Input, Modal, Text } from '@src/alchemy-components';
+import { Button, Checkbox, Input, Modal, Tabs, Text } from '@src/alchemy-components';
+import useFileUpload from '@app/shared/hooks/useFileUpload';
+import { UploadDownloadScenario } from '@types';
+import { LinkFormData } from './types';
+import { UrlLinkForm } from './UrlLinkForm';
+import ButtonTabs from '@app/homeV3/modules/shared/ButtonTabs/ButtonTabs';
+import { UploadFileOrUrlLinkForm } from './UploadFileOrUrlLinkForm';
+import { LinkForm } from './LinkForm';
 
 const FooterContainer = styled.div`
     display: flex;
@@ -29,17 +36,12 @@ const FooterCheckboxLabel = styled(Text)`
     cursor: pointer;
 `;
 
-export interface FormData {
-    url: string;
-    label: string;
-    showInAssetPreview: boolean;
-}
 
 interface Props {
     open: boolean;
-    initialValues?: Partial<FormData>;
+    initialValues?: Partial<LinkFormData>;
     variant: 'create' | 'update';
-    onSubmit: (formData: FormData) => void;
+    onSubmit: (formData: LinkFormData) => void;
     onCancel: () => void;
 }
 
@@ -47,7 +49,9 @@ export const LinkFormModal = ({ open, initialValues, variant, onSubmit, onCancel
     const [shouldBeShownInAssetPreview, setIsShowInAssetPreview] = useState<boolean>(
         !!initialValues?.showInAssetPreview,
     );
-    const [form] = Form.useForm<FormData>();
+    const [form] = Form.useForm<LinkFormData>();
+
+    useFileUpload({ scenario: UploadDownloadScenario.AssetDocumentation, })
 
     const onCancelHandler = useCallback(() => {
         onCancel();
@@ -103,49 +107,7 @@ export const LinkFormModal = ({ open, initialValues, variant, onSubmit, onCancel
                 </FooterContainer>
             }
         >
-            <Form form={form} name="linkForm" onFinish={onSubmit} layout="vertical">
-                <Form.Item
-                    data-testid="link-form-modal-url"
-                    name="url"
-                    initialValue={initialValues?.url}
-                    rules={[
-                        {
-                            required: true,
-                            message: 'A URL is required.',
-                        },
-                        {
-                            type: 'url',
-                            message: 'This field must be a valid url.',
-                        },
-                    ]}
-                >
-                    <Input label="URL" placeholder="https://" autoFocus />
-                </Form.Item>
-
-                <Form.Item
-                    data-testid="link-form-modal-label"
-                    name="label"
-                    initialValue={initialValues?.label}
-                    rules={[
-                        {
-                            required: true,
-                            message: 'A label is required.',
-                        },
-                    ]}
-                >
-                    <Input label="Label" placeholder="A short label for this link" />
-                </Form.Item>
-
-                <Form.Item
-                    data-testid="link-modal-show-in-asset-preview"
-                    name="showInAssetPreview"
-                    valuePropName="checked"
-                    initialValue={initialValues?.showInAssetPreview}
-                    hidden
-                >
-                    <input type="checkbox" />
-                </Form.Item>
-            </Form>
+            <LinkForm form={form} onSubmit={onSubmit} />
         </Modal>
     );
 };

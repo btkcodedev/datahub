@@ -60,7 +60,7 @@ export default function AddEditLinkModal({
                     <FooterCheckboxContainer>
                         <Checkbox isChecked={showInAssetPreview} setIsChecked={setShowInAssetPreview} size="sm" />
                         <FooterCheckboxLabel color="gray" onClick={() => setShowInAssetPreview(!showInAssetPreview)}>
-                            Add to asset header
+                            Add to asset header2
                         </FooterCheckboxLabel>
                     </FooterCheckboxContainer>
                     <FooterButtonsContainer>

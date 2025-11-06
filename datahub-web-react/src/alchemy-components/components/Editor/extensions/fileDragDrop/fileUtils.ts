@@ -245,6 +245,27 @@ export const isFileUrl = (url: string): boolean => {
     return url.includes('/openapi/v1/'); // Our internal file API
 };
 
+export const extractFileNameFromUrl = (url: string): string | undefined => {
+    if (!isFileUrl(url)) return undefined;
+
+    try {
+        const urlObj = new URL(url);
+        const pathname = urlObj.pathname;
+        
+        // Extract the last part after the final '/'
+        const lastSegment = pathname.split('/').pop();
+        
+        if (!lastSegment) return undefined;
+        
+        const fileName = lastSegment.split('__')?.[1];
+        
+        return fileName;
+    } catch (error) {
+        // If URL parsing fails, return undefined
+        return undefined;
+    }
+};
+
 /**
  * Get icon to show based on file extension
  * @param extension - the extension of the file

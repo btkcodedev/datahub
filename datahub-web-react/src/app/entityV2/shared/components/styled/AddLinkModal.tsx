@@ -5,10 +5,11 @@ import React, { useState } from 'react';
 import analytics, { EntityActionType, EventType } from '@app/analytics';
 import { useUserContext } from '@app/context/useUserContext';
 import { useEntityData, useMutationUrn } from '@app/entity/shared/EntityContext';
-import { FormData, LinkFormModal } from '@app/entityV2/shared/components/styled/LinkFormModal';
+import { LinkFormModal } from '@app/entityV2/shared/components/styled/LinkFormModal/LinkFormModal';
 import { Button } from '@src/alchemy-components';
 
 import { useAddLinkMutation } from '@graphql/mutations.generated';
+import { LinkFormData } from './LinkFormModal/types';
 
 interface Props {
     buttonProps?: Record<string, unknown>;
@@ -31,7 +32,7 @@ export const AddLinkModal = ({ buttonProps, refetch, buttonType }: Props) => {
         setIsModalVisible(false);
     };
 
-    const handleAdd = async (formData: FormData) => {
+    const handleAdd = async (formData: LinkFormData) => {
         if (user?.urn) {
             try {
                 await addLinkMutation({

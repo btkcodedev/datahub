@@ -23,6 +23,8 @@ export default function useFileUpload({ scenario, assetUrn, schemaField }: Props
     const { createFile } = useCreateFile({ scenario, assetUrn, schemaField });
 
     const uploadFile = async (file: File) => {
+        console.log('>>> uploadFile')
+        return 'https://deploy-test.acryl.io/openapi/v1/files/product_assets/a2dabbb1-4a82-4905-87c5-fa578d1cefb6__Untitled.png';
         const { data } = await client.query({
             query: GetPresignedUploadUrlDocument,
             variables: {
@@ -65,5 +67,5 @@ export default function useFileUpload({ scenario, assetUrn, schemaField }: Props
         return resolveRuntimePath(`/openapi/v1/files/${PRODUCT_ASSETS_FOLDER}/${fileId}`);
     };
 
-    return config.featureFlags.documentationFileUploadV1 ? { uploadFile } : { uploadFile: undefined };
+    return !config.featureFlags.documentationFileUploadV1 ? { uploadFile } : { uploadFile: undefined };
 }
