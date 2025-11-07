@@ -29,6 +29,19 @@ from datahub.configuration._config_enum import ConfigEnum as ConfigEnum
 from datahub.configuration.pydantic_migration_helpers import PYDANTIC_VERSION_2
 from datahub.utilities.dedup_list import deduplicate_list
 
+# Optional dependency: Secret masking
+try:
+    from datahub.masking.secret_registry import SecretRegistry
+
+    _MASKING_AVAILABLE = True
+except ImportError:
+    _MASKING_AVAILABLE = False
+
+if PYDANTIC_VERSION_2:
+    from pydantic import SecretStr, model_validator
+else:
+    from pydantic import SecretStr, root_validator
+
 REDACT_KEYS = {
     "password",
     "token",
@@ -137,6 +150,70 @@ class ConfigModel(BaseModel):
                 cached_property,
             )  # needed to allow cached_property to work. See https://github.com/samuelcolvin/pydantic/issues/1241 for more info.
             schema_extra = _schema_extra
+
+    def _register_secret_fields(self) -> None:
+        """
+        Register SecretStr fields with the secret masking registry.
+
+        Performance: Uses batch registration for efficiency - single version
+        increment instead of one per secret.
+        """
+        if not _MASKING_AVAILABLE:
+            return
+
+        # Collect all secrets first for batch registration
+        secrets = {}
+
+        if PYDANTIC_VERSION_2:
+            for field_name, _field_info in self.__class__.model_fields.items():
+                field_value = getattr(self, field_name, None)
+                if isinstance(field_value, SecretStr):
+                    secret_value = field_value.get_secret_value()
+                    if secret_value:
+                        secrets[field_name] = secret_value
+        else:
+            for field_name, _field in self.__fields__.items():
+                field_value = getattr(self, field_name, None)
+                if isinstance(field_value, SecretStr):
+                    secret_value = field_value.get_secret_value()
+                    if secret_value:
+                        secrets[field_name] = secret_value
+
+        # Batch register all secrets in one operation
+        if secrets:
+            SecretRegistry.get_instance().register_secrets_batch(secrets)
+
+    if PYDANTIC_VERSION_2:
+
+        @model_validator(mode="after")
+        def _register_secrets_v2(self) -> Self:
+            """Register secret fields after model validation (Pydantic v2)."""
+            self._register_secret_fields()
+            return self
+    else:
+
+        @root_validator(skip_on_failure=True)  # type: ignore[call-overload]
+        def _register_secrets_v1(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+            """
+            Register secret fields after model validation (Pydantic v1).
+
+            Performance: Uses batch registration for efficiency.
+            """
+            if not _MASKING_AVAILABLE:
+                return values
+
+            # Collect all secrets for batch registration
+            secrets = {}
+            for field_name, field_value in values.items():
+                if isinstance(field_value, SecretStr):
+                    secret_value = field_value.get_secret_value()
+                    if secret_value:
+                        secrets[field_name] = secret_value
+
+            if secrets:
+                SecretRegistry.get_instance().register_secrets_batch(secrets)
+
+            return values
 
     @classmethod
     def parse_obj_allow_extras(cls, obj: Any) -> Self:
