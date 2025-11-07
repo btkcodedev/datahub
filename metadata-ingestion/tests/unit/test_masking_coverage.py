@@ -21,6 +21,34 @@ from datahub.masking.secret_registry import (
 )
 
 
+def test_masking_module_imports():
+    """Test that all public exports from __init__.py are importable."""
+    # Import from masking module to cover __init__.py
+    import datahub.masking
+
+    # Test that all exports are available
+    assert hasattr(datahub.masking, "SecretMaskingFilter")
+    assert hasattr(datahub.masking, "StreamMaskingWrapper")
+    assert hasattr(datahub.masking, "install_masking_filter")
+    assert hasattr(datahub.masking, "uninstall_masking_filter")
+    assert hasattr(datahub.masking, "SecretRegistry")
+    assert hasattr(datahub.masking, "should_mask_env_var")
+    assert hasattr(datahub.masking, "is_masking_enabled")
+    assert hasattr(datahub.masking, "initialize_secret_masking")
+    assert hasattr(datahub.masking, "get_masking_safe_logger")
+
+    # Verify imports work
+    from datahub.masking import (
+        SecretMaskingFilter,
+        SecretRegistry,
+        StreamMaskingWrapper,
+    )
+
+    assert SecretMaskingFilter is not None
+    assert SecretRegistry is not None
+    assert StreamMaskingWrapper is not None
+
+
 class TestSecretRegistryEdgeCases:
     def setup_method(self):
         SecretRegistry.reset_instance()
@@ -251,6 +279,39 @@ class TestBootstrapEdgeCases:
         root_logger = logging.getLogger()
         filters = [f for f in root_logger.filters if isinstance(f, SecretMaskingFilter)]
         assert len(filters) == 0
+
+    def test_is_bootstrapped(self):
+        from datahub.masking.bootstrap import is_bootstrapped
+
+        shutdown_secret_masking()
+        assert not is_bootstrapped()
+
+        initialize_secret_masking()
+        assert is_bootstrapped()
+
+        shutdown_secret_masking()
+        assert not is_bootstrapped()
+
+    def test_get_bootstrap_error(self):
+        from datahub.masking.bootstrap import get_bootstrap_error
+
+        shutdown_secret_masking()
+        assert get_bootstrap_error() is None
+
+    def test_initialize_with_disabled_masking(self):
+        """Test initialization when masking is disabled."""
+        from datahub.masking.bootstrap import is_bootstrapped
+
+        os.environ["DATAHUB_DISABLE_SECRET_MASKING"] = "true"
+        try:
+            shutdown_secret_masking()
+            initialize_secret_masking()
+            # Should complete but not actually initialize
+            assert is_bootstrapped()
+        finally:
+            if "DATAHUB_DISABLE_SECRET_MASKING" in os.environ:
+                del os.environ["DATAHUB_DISABLE_SECRET_MASKING"]
+            shutdown_secret_masking()
 
 
 if __name__ == "__main__":
