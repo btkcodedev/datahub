@@ -1,3 +1,4 @@
+import contextvars
 import dataclasses
 import re
 import unittest.mock
@@ -21,26 +22,13 @@ from typing import (
 import pydantic
 import pydantic_core
 from cached_property import cached_property
-from pydantic import BaseModel, Extra, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError, model_validator
 from pydantic.fields import Field
 from typing_extensions import Protocol, Self
 
 from datahub.configuration._config_enum import ConfigEnum as ConfigEnum
-from datahub.configuration.pydantic_migration_helpers import PYDANTIC_VERSION_2
+from datahub.masking.secret_registry import SecretRegistry, is_masking_enabled
 from datahub.utilities.dedup_list import deduplicate_list
-
-# Optional dependency: Secret masking
-try:
-    from datahub.masking.secret_registry import SecretRegistry
-
-    _MASKING_AVAILABLE = True
-except ImportError:
-    _MASKING_AVAILABLE = False
-
-if PYDANTIC_VERSION_2:
-    from pydantic import SecretStr, model_validator
-else:
-    from pydantic import SecretStr, root_validator
 
 REDACT_KEYS = {
     "password",
@@ -109,6 +97,11 @@ else:
 
 LaxStr = Annotated[str, pydantic.BeforeValidator(lambda v: str(v))]
 
+# Context variable to track if we're inside a nested ConfigModel construction
+_inside_nested_config: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_inside_nested_config", default=False
+)
+
 
 @dataclasses.dataclass(frozen=True)
 class SupportedSources:
@@ -138,111 +131,118 @@ class ConfigModel(BaseModel):
             for key in remove_fields:
                 del schema["properties"][key]
 
-        # This is purely to suppress pydantic's warnings, since this class is used everywhere.
-        if PYDANTIC_VERSION_2:
-            extra = "forbid"
-            ignored_types = (cached_property,)
-            json_schema_extra = _schema_extra
-        else:
-            extra = Extra.forbid
-            underscore_attrs_are_private = True
-            keep_untouched = (
-                cached_property,
-            )  # needed to allow cached_property to work. See https://github.com/samuelcolvin/pydantic/issues/1241 for more info.
-            schema_extra = _schema_extra
+        extra = "forbid"
+        ignored_types = (cached_property,)
+        json_schema_extra = _schema_extra
 
-    def _register_secret_fields(self) -> None:
+    @model_validator(mode="wrap")
+    @classmethod
+    def _track_nesting_context(
+        cls,
+        data: Any,
+        handler: pydantic.ValidatorFunctionWrapHandler,
+        info: pydantic.ValidationInfo,
+    ) -> Self:
+        """
+        Wrap validator that tracks nesting context for nested ConfigModel detection.
+
+        Sets a context variable so nested ConfigModels know they're being constructed as fields.
+        """
+        # Set context for any nested models that will be created during field processing
+        token = _inside_nested_config.set(True)
+        try:
+            # Process the model normally (this calls __init__ and all validators)
+            instance = handler(data)
+        finally:
+            # Reset context after processing
+            _inside_nested_config.reset(token)
+
+        return instance
+
+    @model_validator(mode="after")
+    def _register_secret_fields(self) -> Self:
         """
         Register SecretStr fields with the secret masking registry.
+        Recursively traverses nested ConfigModel instances to find all SecretStr fields.
+
+        Only models that are constructed outside of Pydantic field processing will register secrets.
+        This ensures we capture the full qualified paths for nested secrets.
 
         Performance: Uses batch registration for efficiency - single version
         increment instead of one per secret.
         """
-        if not _MASKING_AVAILABLE:
-            return
+        if not is_masking_enabled():
+            return self
 
-        # Collect all secrets first for batch registration
-        secrets = {}
+        # Only register if we're NOT inside another ConfigModel's field processing
+        # This means we're a "root" model from the user's perspective
+        if _inside_nested_config.get():
+            return self
 
-        if PYDANTIC_VERSION_2:
-            for field_name, _field_info in self.__class__.model_fields.items():
-                field_value = getattr(self, field_name, None)
-                if isinstance(field_value, SecretStr):
-                    secret_value = field_value.get_secret_value()
-                    if secret_value:
-                        secrets[field_name] = secret_value
-        else:
-            for field_name, _field in self.__fields__.items():
-                field_value = getattr(self, field_name, None)
-                if isinstance(field_value, SecretStr):
-                    secret_value = field_value.get_secret_value()
-                    if secret_value:
-                        secrets[field_name] = secret_value
+        # Collect all secrets recursively (including from nested models)
+        secrets: Dict[str, str] = {}
+        self._collect_secrets(secrets, prefix="")
 
         # Batch register all secrets in one operation
         if secrets:
             SecretRegistry.get_instance().register_secrets_batch(secrets)
 
-    if PYDANTIC_VERSION_2:
+        return self
 
-        @model_validator(mode="after")
-        def _register_secrets_v2(self) -> Self:
-            """Register secret fields after model validation (Pydantic v2)."""
-            self._register_secret_fields()
-            return self
-    else:
+    def _collect_secrets(self, secrets: Dict[str, str], prefix: str) -> None:
+        """
+        Recursively collect SecretStr fields from this model and nested ConfigModel instances.
 
-        @root_validator(skip_on_failure=True)  # type: ignore[call-overload]
-        def _register_secrets_v1(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-            """
-            Register secret fields after model validation (Pydantic v1).
+        Args:
+            secrets: Dictionary to populate with field_name -> secret_value mappings
+            prefix: Prefix for nested field names (e.g., "azure_auth." for nested fields)
+        """
+        for field_name, _field_info in self.__class__.model_fields.items():
+            field_value = getattr(self, field_name, None)
 
-            Performance: Uses batch registration for efficiency.
-            """
-            if not _MASKING_AVAILABLE:
-                return values
+            if field_value is None:
+                continue
 
-            # Collect all secrets for batch registration
-            secrets = {}
-            for field_name, field_value in values.items():
-                if isinstance(field_value, SecretStr):
-                    secret_value = field_value.get_secret_value()
-                    if secret_value:
-                        secrets[field_name] = secret_value
+            # Build the full field path for better debugging
+            full_name = f"{prefix}{field_name}" if prefix else field_name
 
-            if secrets:
-                SecretRegistry.get_instance().register_secrets_batch(secrets)
-
-            return values
+            if isinstance(field_value, SecretStr):
+                # Direct SecretStr field
+                secret_value = field_value.get_secret_value()
+                if secret_value:
+                    secrets[full_name] = secret_value
+            elif isinstance(field_value, ConfigModel):
+                # Nested ConfigModel - recurse into it
+                field_value._collect_secrets(secrets, prefix=f"{full_name}.")
+            elif isinstance(field_value, list):
+                # Handle lists of ConfigModels
+                for idx, item in enumerate(field_value):
+                    if isinstance(item, ConfigModel):
+                        item._collect_secrets(secrets, prefix=f"{full_name}[{idx}].")
+            elif isinstance(field_value, dict):
+                # Handle dicts with ConfigModel values
+                for key, item in field_value.items():
+                    if isinstance(item, ConfigModel):
+                        item._collect_secrets(secrets, prefix=f"{full_name}[{key}].")
 
     @classmethod
     def parse_obj_allow_extras(cls, obj: Any) -> Self:
         """Parse an object while allowing extra fields.
 
-        'parse_obj' in Pydantic v1 is equivalent to 'model_validate' in Pydantic v2.
-        However, 'parse_obj_allow_extras' in v1 is not directly available in v2.
-
-        `model_validate(..., strict=False)` does not work because it still raises errors on extra fields;
-        strict=False only affects type coercion and validation strictness, not extra field handling.
-
-        This method temporarily modifies the model's configuration to allow extra fields
+        This method temporarily modifies the model's configuration to allow extra fields.
 
         TODO: Do we really need to support this behaviour? Consider removing this method in future.
         """
-        if PYDANTIC_VERSION_2:
-            try:
-                with unittest.mock.patch.dict(
-                    cls.model_config,  # type: ignore
-                    {"extra": "allow"},
-                    clear=False,
-                ):
-                    cls.model_rebuild(force=True)  # type: ignore
-                    return cls.model_validate(obj)
-            finally:
+        try:
+            with unittest.mock.patch.dict(
+                cls.model_config,  # type: ignore
+                {"extra": "allow"},
+                clear=False,
+            ):
                 cls.model_rebuild(force=True)  # type: ignore
-        else:
-            with unittest.mock.patch.object(cls.Config, "extra", pydantic.Extra.allow):
                 return cls.model_validate(obj)
+        finally:
+            cls.model_rebuild(force=True)  # type: ignore
 
 
 class PermissiveConfigModel(ConfigModel):
@@ -252,21 +252,14 @@ class PermissiveConfigModel(ConfigModel):
     # It is usually used for argument bags that are passed through to third-party libraries.
 
     class Config:
-        if PYDANTIC_VERSION_2:  # noqa: SIM108
-            extra = "allow"
-        else:
-            extra = Extra.allow
+        extra = "allow"
 
 
 class ConnectionModel(BaseModel):
     """Represents the config associated with a connection"""
 
     class Config:
-        if PYDANTIC_VERSION_2:
-            extra = "allow"
-        else:
-            extra = Extra.allow
-            underscore_attrs_are_private = True
+        extra = "allow"
 
 
 class TransformerSemantics(ConfigEnum):
