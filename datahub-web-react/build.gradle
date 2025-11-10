@@ -65,7 +65,7 @@ task yarnInstall(type: YarnTask) {
   outputs.dir('node_modules')
 }
 
-task yarnGenerate(type: YarnTask, dependsOn: yarnInstall) {
+task yarnGenerateCacheable(type: YarnTask, dependsOn: yarnInstall) {
   args = ['run', 'generate']
 
   outputs.cacheIf { true }
@@ -100,7 +100,7 @@ task yarnGenerate(type: YarnTask, dependsOn: yarnInstall) {
 }
 
 // Sync generated files from build/generated to src/
-task syncGeneratedFiles(type: Copy, dependsOn: yarnGenerate) {
+task yarnGenerate(type: Copy, dependsOn: yarnGenerateCacheable) {
   from "${buildDir}/generated"
   into "src"
   include "**/*.generated.ts"
@@ -109,17 +109,17 @@ task syncGeneratedFiles(type: Copy, dependsOn: yarnGenerate) {
   includeEmptyDirs = false
 }
 
-task yarnServe(type: YarnTask, dependsOn: [yarnInstall, syncGeneratedFiles]) {
+task yarnServe(type: YarnTask, dependsOn: [yarnInstall, yarnGenerate]) {
   environment.put('REACT_APP_PROXY_TARGET', 'http://localhost:9001')
   args = ['run', 'start']
 }
 
-task yarnPreview(type: YarnTask, dependsOn: [yarnInstall, syncGeneratedFiles]) {
+task yarnPreview(type: YarnTask, dependsOn: [yarnInstall, yarnGenerate]) {
   environment.put('REACT_APP_PROXY_TARGET', project.findProperty('proxy') ?: 'http://localhost:9001')
   args = ['run', 'preview']
 }
 
-task yarnTest(type: YarnTask, dependsOn: [yarnInstall, syncGeneratedFiles]) {
+task yarnTest(type: YarnTask, dependsOn: [yarnInstall, yarnGenerate]) {
   // Explicitly runs in non-watch mode.
   args = ['run', project.hasProperty('withCoverage') ? 'test-coverage' : 'test', 'run']
   def test_sentinel = "${buildDir}/.yarn-test-sentinel"
@@ -137,7 +137,7 @@ task yarnTest(type: YarnTask, dependsOn: [yarnInstall, syncGeneratedFiles]) {
   outputs.cacheIf { true }
 }
 
-task yarnLint(type: YarnTask, dependsOn: [yarnInstall, syncGeneratedFiles]) {
+task yarnLint(type: YarnTask, dependsOn: [yarnInstall, yarnGenerate]) {
   def targetFile = project.findProperty('file') ?: ''
 
   if (targetFile.isEmpty()) {
@@ -165,7 +165,7 @@ task yarnLint(type: YarnTask, dependsOn: [yarnInstall, syncGeneratedFiles]) {
 
 test.dependsOn([yarnInstall, yarnTest, yarnLint])
 
-task yarnLintFix(type: YarnTask, dependsOn: [yarnInstall, syncGeneratedFiles]) {
+task yarnLintFix(type: YarnTask, dependsOn: [yarnInstall, yarnGenerate]) {
   def targetFile = project.findProperty('file') ?: ''
 
   if (targetFile.isEmpty()) {
@@ -215,7 +215,6 @@ task yarnBuild(type: YarnTask, dependsOn: [yarnInstall, yarnGenerate]) {
     project.fileTree(dir: "public"),
 
     yarnInstall.inputs.files,
-    //yarnGenerate.outputs.files,
 
     file('.env'),
     file('vite.config.ts'),
